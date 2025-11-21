@@ -1,363 +1,386 @@
 """
 Tapo P110 Device Control Script
-Controls Tapo P110 smart plugs via TP-Link Cloud API
+Controls Tapo P110 smart plugs via local network using Tapo API
 """
 
 import os
 import asyncio
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from tplinkcloud import TPLinkDeviceManager
+from tapo import ApiClient
+from tapo.requests import EnergyDataInterval, PowerDataInterval
 
 # Load environment variables
 load_dotenv()
 
 
+def get_quarter_start_month(today: datetime) -> int:
+    """
+    Calculate the starting month of the quarter for a given date
+    
+    Args:
+        today: The datetime object to calculate the quarter start month for
+        
+    Returns:
+        The month number (1-12) representing the first month of the quarter
+    """
+    return ((today.month - 1) // 3) * 3 + 1
+
+
 class TapoP110Controller:
     """
-    Controller class for Tapo P110 smart plug devices using cloud API
+    Controller class for Tapo P110 smart plug devices using local network API
     """
     
-    def __init__(self, email: str = None, password: str = None):
+    def __init__(self, email: str = None, password: str = None, device_ip: str = None):
         """
-        Initialize the Tapo P110 controller with cloud credentials
+        Initialize the Tapo P110 controller with credentials and device IP
         
         Args:
-            email: TP-Link cloud account email (or from .env file)
-            password: TP-Link cloud account password (or from .env file)
+            email: Tapo account email (or from .env file)
+            password: Tapo account password (or from .env file)
+            device_ip: Device IP address (or from .env file)
         """
         self.email = email or os.getenv('TP_LINK_EMAIL')
         self.password = password or os.getenv('TP_LINK_PASSWORD')
+        self.device_ip = device_ip or os.getenv('TAPO_DEVICE_IP')
         
         if not self.email or not self.password:
             raise ValueError("Email and password must be provided either as arguments or in .env file")
         
-        self.device_manager = TPLinkDeviceManager(username=self.email, password=self.password)
-        self.devices = None
+        if not self.device_ip:
+            raise ValueError("Device IP address must be provided either as argument or in .env file as TAPO_DEVICE_IP")
+        
+        self.client = ApiClient(self.email, self.password)
+        self.device = None
     
-    async def get_devices(self):
+    async def _ensure_device_connected(self):
         """
-        Retrieve list of all devices from TP-Link cloud
+        Ensure device is connected. Connect if not already connected.
         
         Returns:
-            List of device objects
+            Device object if successful, None otherwise
         """
-        try:
-            # Login first (if not already logged in)
-            login_result = self.device_manager.login(self.email, self.password)
-            if login_result and hasattr(login_result, '__await__'):
-                await login_result
-            
-            # Get devices
-            devices_result = self.device_manager.get_devices()
-            if devices_result and hasattr(devices_result, '__await__'):
-                self.devices = await devices_result
-            else:
-                self.devices = devices_result
-            
-            return self.devices
-        except Exception as e:
-            print(f"Error retrieving devices: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
+        if self.device is None:
+            try:
+                self.device = await self.client.p110(self.device_ip)
+            except Exception as e:
+                print(f"Error connecting to device at {self.device_ip}: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
+        return self.device
     
-    async def find_p110_device(self, device_alias: str = None):
+    async def turn_on(self):
         """
-        Find a specific P110 device by alias or return first P110 device
+        Turn on the P110 device
         
-        Args:
-            device_alias: Optional device alias/name to search for
-            
-        Returns:
-            Device object if found, None otherwise
-        """
-        if not self.devices:
-            await self.get_devices()
-        
-        if not self.devices:
-            print("No devices found")
-            return None
-        
-        if device_alias:
-            for device in self.devices:
-                if device.get_alias().lower() == device_alias.lower():
-                    return device
-            print(f"Device '{device_alias}' not found")
-            return None
-        
-        # Return first device if no alias specified
-        return self.devices[0] if self.devices else None
-    
-    async def turn_on(self, device_alias: str = None):
-        """
-        Turn on a P110 device
-        
-        Args:
-            device_alias: Optional device alias/name. If not provided, uses first device
-            
         Returns:
             True if successful, False otherwise
         """
-        device = await self.find_p110_device(device_alias)
+        device = await self._ensure_device_connected()
         if not device:
-            print("Device not found")
+            print("Device not found or could not connect")
             return False
         
         try:
-            # Check current status before turning on
-            is_currently_off = await device.is_off()
-            is_currently_on = await device.is_on()
-            
-            # Handle None returns (device info unavailable)
-            if is_currently_off is None or is_currently_on is None:
-                print(f"Warning: Could not determine current status for device '{device.get_alias()}'")
-                print("  Proceeding with turn on command anyway...")
-            else:
-                status_str = "ON" if is_currently_on else "OFF"
-                print(f"Device '{device.get_alias()}' current status: {status_str}")
-            
-            # Turn on the device - directly await the async method
-            print(f"Executing power_on command for device '{device.get_alias()}'...")
+            # Get current status before turning on
             try:
-                result = await device.power_on()
-                if result is None:
-                    print(f"[OK] Command executed successfully (response: None - this is normal for cloud API)")
-                else:
-                    print(f"[OK] Command executed. Response: {result}")
+                device_info = await device.get_device_info()
+                is_currently_on = device_info.device_on
+                status_str = "ON" if is_currently_on else "OFF"
+                print(f"Device current status: {status_str}")
+            except Exception as e:
+                print(f"Warning: Could not determine current status: {e}")
+                print("  Proceeding with turn on command anyway...")
+            
+            # Turn on the device
+            print(f"Executing turn on command...")
+            try:
+                await device.on()
+                print(f"[OK] Command executed successfully")
             except Exception as cmd_error:
-                print(f"[ERROR] Error executing power_on command: {cmd_error}")
+                print(f"[ERROR] Error executing turn on command: {cmd_error}")
                 import traceback
                 traceback.print_exc()
                 return False
             
-            # Wait a moment for the command to process and device state to update
-            await asyncio.sleep(3)  # Increased wait time for cloud API
+            # Wait a moment for the command to process
+            await asyncio.sleep(1)
             
-            # Refresh device state by getting fresh status
-            await self.get_devices()  # Refresh device list
-            device = await self.find_p110_device(device_alias)
-            
-            if device:
-                # Verify the device is actually on
-                is_now_on = await device.is_on()
-                is_now_off = await device.is_off()
+            # Verify the device is actually on
+            try:
+                device_info = await device.get_device_info()
+                is_now_on = device_info.device_on
                 
-                if is_now_on is True and is_now_off is False:
-                    print(f"[SUCCESS] Successfully turned ON: {device.get_alias()}")
+                if is_now_on:
+                    print(f"[SUCCESS] Successfully turned ON device")
                     return True
-                elif is_now_on is None or is_now_off is None:
-                    print(f"[INFO] Command executed, but could not verify device status")
-                    print(f"  This may be normal for cloud API - status checks sometimes return None")
-                    print(f"  Please check the physical device to confirm it turned on")
-                    print(f"  If the device did turn on, the command was successful!")
-                    return True  # Assume success if command executed without error
                 else:
-                    current_status = "ON" if is_now_on else "OFF"
-                    print(f"[WARNING] Device '{device.get_alias()}' status is still {current_status}")
+                    print(f"[WARNING] Device status is still OFF")
                     print(f"  The turn on command may not have worked. Please check the device manually.")
                     return False
-            else:
-                print("[ERROR] Could not verify device status - device not found after refresh")
-                return False
+            except Exception as e:
+                print(f"[INFO] Command executed, but could not verify device status: {e}")
+                print(f"  Please check the physical device to confirm it turned on")
+                return True  # Assume success if command executed without error
         except Exception as e:
             print(f"[ERROR] Error turning device on: {e}")
             import traceback
             traceback.print_exc()
             return False
     
-    async def turn_off(self, device_alias: str = None):
+    async def turn_off(self):
         """
-        Turn off a P110 device
+        Turn off the P110 device
         
-        Args:
-            device_alias: Optional device alias/name. If not provided, uses first device
-            
         Returns:
             True if successful, False otherwise
         """
-        device = await self.find_p110_device(device_alias)
+        device = await self._ensure_device_connected()
         if not device:
-            print("Device not found")
+            print("Device not found or could not connect")
             return False
         
         try:
-            # Check current status before turning off
-            is_currently_on = await device.is_on()
-            is_currently_off = await device.is_off()
-            
-            # Handle None returns (device info unavailable)
-            if is_currently_off is None or is_currently_on is None:
-                print(f"Warning: Could not determine current status for device '{device.get_alias()}'")
-                print("  Proceeding with turn off command anyway...")
-            else:
-                status_str = "ON" if is_currently_on else "OFF"
-                print(f"Device '{device.get_alias()}' current status: {status_str}")
-            
-            # Turn off the device - directly await the async method
-            print(f"Executing power_off command for device '{device.get_alias()}'...")
+            # Get current status before turning off
             try:
-                result = await device.power_off()
-                if result is None:
-                    print(f"[OK] Command executed successfully (response: None - this is normal for cloud API)")
-                else:
-                    print(f"[OK] Command executed. Response: {result}")
+                device_info = await device.get_device_info()
+                is_currently_on = device_info.device_on
+                status_str = "ON" if is_currently_on else "OFF"
+                print(f"Device current status: {status_str}")
+            except Exception as e:
+                print(f"Warning: Could not determine current status: {e}")
+                print("  Proceeding with turn off command anyway...")
+            
+            # Turn off the device
+            print(f"Executing turn off command...")
+            try:
+                await device.off()
+                print(f"[OK] Command executed successfully")
             except Exception as cmd_error:
-                print(f"[ERROR] Error executing power_off command: {cmd_error}")
+                print(f"[ERROR] Error executing turn off command: {cmd_error}")
                 import traceback
                 traceback.print_exc()
                 return False
             
-            # Wait a moment for the command to process and device state to update
-            await asyncio.sleep(3)  # Increased wait time for cloud API
+            # Wait a moment for the command to process
+            await asyncio.sleep(1)
             
-            # Refresh device state by getting fresh status
-            await self.get_devices()  # Refresh device list
-            device = await self.find_p110_device(device_alias)
-            
-            if device:
-                # Verify the device is actually off
-                is_now_off = await device.is_off()
-                is_now_on = await device.is_on()
+            # Verify the device is actually off
+            try:
+                device_info = await device.get_device_info()
+                is_now_on = device_info.device_on
                 
-                if is_now_off is True and is_now_on is False:
-                    print(f"[SUCCESS] Successfully turned OFF: {device.get_alias()}")
+                if not is_now_on:
+                    print(f"[SUCCESS] Successfully turned OFF device")
                     return True
-                elif is_now_off is None or is_now_on is None:
-                    print(f"[INFO] Command executed, but could not verify device status")
-                    print(f"  This may be normal for cloud API - status checks sometimes return None")
-                    print(f"  Please check the physical device to confirm it turned off")
-                    print(f"  If the device did turn off, the command was successful!")
-                    return True  # Assume success if command executed without error
                 else:
-                    current_status = "ON" if is_now_on else "OFF"
-                    print(f"[WARNING] Device '{device.get_alias()}' status is still {current_status}")
+                    print(f"[WARNING] Device status is still ON")
                     print(f"  The turn off command may not have worked. Please check the device manually.")
                     return False
-            else:
-                print("[ERROR] Could not verify device status - device not found after refresh")
-                return False
+            except Exception as e:
+                print(f"[INFO] Command executed, but could not verify device status: {e}")
+                print(f"  Please check the physical device to confirm it turned off")
+                return True  # Assume success if command executed without error
         except Exception as e:
             print(f"[ERROR] Error turning device off: {e}")
             import traceback
             traceback.print_exc()
             return False
     
-    async def get_device_info(self, device_alias: str = None):
+    async def get_device_info(self):
         """
-        Get information about a P110 device
+        Get information about the P110 device
         
-        Args:
-            device_alias: Optional device alias/name. If not provided, uses first device
-            
         Returns:
-            Device object
+            Device info object if successful, None otherwise
         """
-        device = await self.find_p110_device(device_alias)
-        if device:
-            print(f"\nDevice Information:")
-            print(f"  Alias: {device.get_alias()}")
-            try:
-                sys_info = await device.get_sys_info()
-                if sys_info:
-                    print(f"  Model: {sys_info.get('model', 'N/A')}")
-                    print(f"  Device ID: {sys_info.get('deviceId', 'N/A')}")
-                    print(f"  Hardware Version: {sys_info.get('hw_ver', 'N/A')}")
-                    print(f"  Firmware Version: {sys_info.get('fw_ver', 'N/A')}")
-            except Exception as e:
-                print(f"  (Could not retrieve system info: {e})")
-            return device
-        return None
-    
-    async def get_device_status(self, device_alias: str = None):
-        """
-        Get the current power status of a device
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
         
-        Args:
-            device_alias: Optional device alias/name. If not provided, uses first device
-            
+        try:
+            device_info = await device.get_device_info()
+            print(f"\nDevice Information:")
+            print(f"  IP Address: {self.device_ip}")
+            print(f"  Device On: {device_info.device_on}")
+            print(f"  Device ID: {device_info.device_id}")
+            print(f"  Model: {device_info.model}")
+            print(f"  Hardware Version: {device_info.hw_ver}")
+            print(f"  Firmware Version: {device_info.fw_ver}")
+            print(f"  Type: {device_info.type}")
+            if hasattr(device_info, 'nickname'):
+                print(f"  Nickname: {device_info.nickname}")
+            return device_info
+        except Exception as e:
+            print(f"Error retrieving device info: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_device_status(self):
+        """
+        Get the current power status of the device
+        
         Returns:
             String status: "ON" or "OFF"
         """
-        device = await self.find_p110_device(device_alias)
+        device = await self._ensure_device_connected()
         if not device:
             return None
         
         try:
-            is_on_status = await device.is_on()
-            return "ON" if is_on_status else "OFF"
+            device_info = await device.get_device_info()
+            return "ON" if device_info.device_on else "OFF"
         except Exception as e:
             print(f"Error getting device status: {e}")
             return None
     
-    async def list_all_devices(self):
+    async def get_current_power(self):
         """
-        List all available devices with their information
+        Get current power consumption data from the P110 device
+        
+        Returns:
+            Current power object if successful, None otherwise
         """
-        if not self.devices:
-            await self.get_devices()
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
         
-        if not self.devices:
-            print("No devices found")
-            return
+        try:
+            current_power = await device.get_current_power()
+            print(f"\nCurrent Power:")
+            print(f"  {current_power.to_dict()}")
+            return current_power
+        except Exception as e:
+            print(f"Error retrieving current power: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_device_usage(self):
+        """
+        Get device usage statistics from the P110 device
         
-        print(f"\nFound {len(self.devices)} device(s):")
-        for i, device in enumerate(self.devices, 1):
-            print(f"\n{i}. {device.get_alias()}")
-            try:
-                sys_info = await device.get_sys_info()
-                if sys_info:
-                    print(f"   Model: {sys_info.get('model', 'N/A')}")
-                    print(f"   Device ID: {sys_info.get('deviceId', 'N/A')}")
-                # Show current status
-                status = await self.get_device_status(device.get_alias())
-                if status:
-                    print(f"   Status: {status}")
-            except Exception as e:
-                print(f"   Error getting info: {e}")
+        Returns:
+            Device usage object if successful, None otherwise
+        """
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
+        
+        try:
+            device_usage = await device.get_device_usage()
+            print(f"\nDevice Usage:")
+            print(f"  {device_usage.to_dict()}")
+            return device_usage
+        except Exception as e:
+            print(f"Error retrieving device usage: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_energy_usage(self):
+        """
+        Get energy usage statistics from the P110 device
+        
+        Returns:
+            Energy usage object if successful, None otherwise
+        """
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
+        
+        try:
+            energy_usage = await device.get_energy_usage()
+            print(f"\nEnergy Usage:")
+            print(f"  {energy_usage.to_dict()}")
+            return energy_usage
+        except Exception as e:
+            print(f"Error retrieving energy usage: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_energy_data(self, interval: EnergyDataInterval, start_date: datetime = None):
+        """
+        Get energy data from the P110 device with specified interval
+        
+        Args:
+            interval: EnergyDataInterval enum (Hourly, Daily, or Monthly)
+            start_date: Start date for the data query. Defaults to current UTC time.
+                       - For Hourly: inclusive interval, must not be greater than 8 days
+                       - For Daily: must be the first day of a quarter
+                       - For Monthly: must be the first day of a year
+        
+        Returns:
+            Energy data object if successful, None otherwise
+        """
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
+        
+        if start_date is None:
+            start_date = datetime.now(timezone.utc)
+        
+        try:
+            energy_data = await device.get_energy_data(interval, start_date)
+            interval_name = interval.name if hasattr(interval, 'name') else str(interval)
+            print(f"\nEnergy data ({interval_name.lower()}):")
+            print(f"  Start date time: '{energy_data.start_date_time}'")
+            print(f"  Entries: {len(energy_data.entries)}")
+            if energy_data.entries:
+                print(f"  First entry: {energy_data.entries[0].to_dict()}")
+            else:
+                print(f"  No entries available")
+            return energy_data
+        except Exception as e:
+            print(f"Error retrieving energy data: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_power_data(self, interval: PowerDataInterval, start_date_time: datetime, end_date_time: datetime):
+        """
+        Get power data from the P110 device with specified interval
+        
+        Args:
+            interval: PowerDataInterval enum (Every5Minutes or Hourly)
+            start_date_time: Start date and time for the data query (exclusive)
+            end_date_time: End date and time for the data query (exclusive)
+                          - For Every5Minutes: max 144 entries (12 hours), end_date_time will be adjusted if needed
+                          - For Hourly: max 144 entries (6 days), end_date_time will be adjusted if needed
+        
+        Returns:
+            Power data object if successful, None otherwise
+        """
+        device = await self._ensure_device_connected()
+        if not device:
+            print("Device not found or could not connect")
+            return None
+        
+        try:
+            power_data = await device.get_power_data(interval, start_date_time, end_date_time)
+            interval_name = interval.name if hasattr(interval, 'name') else str(interval)
+            print(f"\nPower data ({interval_name.lower()}):")
+            print(f"  Start date time: '{power_data.start_date_time}'")
+            print(f"  End date time: '{power_data.end_date_time}'")
+            print(f"  Entries: {len(power_data.entries)}")
+            if power_data.entries:
+                print(f"  First entry: {power_data.entries[0].to_dict()}")
+            else:
+                print(f"  No entries available")
+            return power_data
+        except Exception as e:
+            print(f"Error retrieving power data: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
-
-async def main():
-    """
-    Example usage of TapoP110Controller
-    """
-    try:
-        # Initialize controller
-        controller = TapoP110Controller()
-        
-        # List all devices
-        await controller.list_all_devices()
-        
-        # Get device alias from environment variable (optional)
-        device_alias = os.getenv('TAPO_DEVICE_ALIAS')
-        
-        # Check current status
-        status = await controller.get_device_status(device_alias)
-        print(f"\nCurrent device status: {status}")
-        
-        # Example: Turn on device (uses env variable if set, otherwise None uses first device)
-        await controller.turn_on(device_alias)
-        
-        # Example: Turn off specific device by alias
-        result = await controller.turn_off(device_alias)
-        if result:
-            print("Turn off command executed successfully")
-        else:
-            print("Turn off command failed")
-        
-        # Verify final status
-        final_status = await controller.get_device_status(device_alias)
-        print(f"Final device status: {final_status}")
-        
-        # Example: Get device info
-        await controller.get_device_info(device_alias)
-        
-    except ValueError as e:
-        print(f"Configuration error: {e}")
-        print("Please set TP_LINK_EMAIL and TP_LINK_PASSWORD in .env file")
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
