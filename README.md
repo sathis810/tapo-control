@@ -130,6 +130,8 @@ This project uses `tplink-cloud-api` library:
 
 To package this project and run it on another computer, see [PACKAGING.md](PACKAGING.md) for detailed instructions.
 
+**📦 After installing the package**, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md) for step-by-step environment setup instructions.
+
 ### Quick Distribution Methods:
 
 **Method 1: Source Distribution** (Recommended)

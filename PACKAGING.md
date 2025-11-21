@@ -43,8 +43,8 @@ pip install .
 ```
 
 4. **Set up environment**:
-   - Copy `env.example` to `.env`
-   - Edit `.env` with your credentials:
+   - **Important:** The `.env` file must be created manually in your working directory
+   - Create a `.env` file with your credentials (see `INSTALLATION_GUIDE.md` for details):
      ```
      TP_LINK_EMAIL=your-email@example.com
      TP_LINK_PASSWORD=your-password
@@ -53,13 +53,20 @@ pip install .
      BATTERY_STOP_THRESHOLD=80
      BATTERY_CHECK_INTERVAL=60
      ```
+   - **Note:** The `.env` file should be in the directory where you run the application, NOT in the Python installation directory
 
 5. **Run the application**:
 ```bash
+# Navigate to directory with .env file
+cd your-working-directory
+
+# Run the application
 python -m main
 # Or if installed as package:
 tapo-control
 ```
+
+**📖 For detailed post-installation setup instructions, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)**
 
 ## Method 2: Simple File Copy (Easiest)
 
