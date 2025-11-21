@@ -126,6 +126,34 @@ This project uses `tplink-cloud-api` library:
 - GitHub: https://github.com/piekstra/tplink-cloud-api
 - Note: This is an unofficial, community-developed library
 
+## Packaging and Distribution
+
+To package this project and run it on another computer, see [PACKAGING.md](PACKAGING.md) for detailed instructions.
+
+### Quick Distribution Methods:
+
+**Method 1: Source Distribution** (Recommended)
+```bash
+pip install build wheel
+python -m build
+# Copy dist/ folder to target computer
+pip install dist/tapo_control-1.0.0-py3-none-any.whl
+```
+
+**Method 2: Simple File Copy** (Easiest)
+- Copy all project files to target computer
+- Run `setup.bat` (Windows) or `setup.sh` (Linux/Mac)
+- Configure `.env` file
+
+**Method 3: Standalone Executable**
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name tapo-control main.py
+# Copy executable to target computer
+```
+
+See [PACKAGING.md](PACKAGING.md) for complete instructions.
+
 ## License
 
 This project is provided as-is for educational and personal use.
